@@ -30,3 +30,11 @@ futures = "0.3"
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 futures = "0.3"
 tokio-tungstenite = "0.26"
+tokio-websockets = { version = "0.13.1", features = ["server", "native-tls", "sha1_smol"] }
+tokio-native-tls = "0.3.0"
+
+
+[[example]]
+name = "reconnect-websocket-demo"
+path = "examples/reconnect-websocket-demo.rs"
+test = true
