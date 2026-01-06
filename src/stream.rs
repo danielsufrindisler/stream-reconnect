@@ -277,6 +277,7 @@ where
                 Some(duration) => duration,
                 None => {
                     error!("No more re-connect retries remaining. Giving up.");
+                    (self.options.on_exhausted_callback())();
                     self.status = Status::FailedAndExhausted;
                     self.wake();
                     return;
