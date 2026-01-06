@@ -27,6 +27,9 @@ impl ReconnectOptions {
     pub(crate) fn on_connect_fail_callback(&self) -> &Arc<dyn Fn() + Send + Sync> {
         &self.0.on_connect_fail_callback
     }
+    pub(crate) fn on_exhausted_callback(&self) -> &Arc<dyn Fn() + Send + Sync> {
+        &self.0.on_exhausted_callback
+    }
 }
 
 #[derive(Clone)]
@@ -36,6 +39,8 @@ struct Inner {
     on_connect_callback: Arc<dyn Fn() + Send + Sync>,
     on_disconnect_callback: Arc<dyn Fn() + Send + Sync>,
     on_connect_fail_callback: Arc<dyn Fn() + Send + Sync>,
+    on_exhausted_callback: Arc<dyn Fn() + Send + Sync>,
+
 }
 
 impl ReconnectOptions {
@@ -50,6 +55,8 @@ impl ReconnectOptions {
             on_connect_callback: Arc::new(|| {}),
             on_disconnect_callback: Arc::new(|| {}),
             on_connect_fail_callback: Arc::new(|| {}),
+            on_exhausted_callback: Arc::new(|| {}),
+            
         }))
     }
 
@@ -106,6 +113,11 @@ impl ReconnectOptions {
     /// Invoked when the [ReconnectStream](crate::ReconnectStream) fails a connection attempt
     pub fn with_on_connect_fail_callback(mut self, cb: impl Fn() + 'static + Send + Sync) -> Self {
         self.0.on_connect_fail_callback = Arc::new(cb);
+        self
+    }
+
+    pub fn with_on_exhausted_callback(mut self, cb: impl Fn() + 'static + Send + Sync) -> Self {
+        self.0.on_exhausted_callback = Arc::new(cb);
         self
     }
 }

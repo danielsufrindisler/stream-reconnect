@@ -99,6 +99,8 @@ where
     stream: T::Stream,
     options: ReconnectOptions,
     ctor_arg: C,
+    cx_waker_sink: Option<std::task::Waker>,
+    cx_waker_stream: Option<std::task::Waker>,
 }
 
 enum Status<T, C, I, E>
@@ -143,6 +145,38 @@ where
     I: Unpin,
     E: Error + Unpin,
 {
+    fn return_stream(mut self: Pin<&mut Self>, cx: &mut Context<'_>, item: Poll<Option<I>>) -> Poll<Option<I>> {
+                match item {
+            Poll::Ready(item) => {
+                self.cx_waker_stream = None;
+                Poll::Ready(item)
+            }
+            Poll::Pending => {
+        self.cx_waker_stream = Some(cx.waker().clone());
+        Poll::Pending
+            }
+    
+
+        }
+    }
+
+    fn return_sink(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        item: Poll<Result<(), E>>,
+    ) -> Poll<Result<(), E>> {
+        match item {
+            Poll::Ready(result) => {
+                self.cx_waker_sink = None;
+                Poll::Ready(result)
+            }
+            Poll::Pending => {
+                self.cx_waker_sink = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+
     /// Connects or creates a handle to the [UnderlyingStream] item,
     /// using the default reconnect options.
     pub async fn connect(ctor_arg: C) -> Result<Self, E> {
@@ -200,11 +234,22 @@ where
                 stream,
                 options,
                 ctor_arg,
+                cx_waker_sink: None,
+                cx_waker_stream: None,
             }),
             Err(e) => {
                 error!("No more re-connect retries remaining. Never able to establish initial connection.");
                 Err(e)
             }
+        }
+    }
+
+    fn wake(&mut self) {
+        if let Some(waker) = &self.cx_waker_sink {
+            waker.wake_by_ref();
+        }
+        if let Some(waker) = &self.cx_waker_stream {
+            waker.wake_by_ref();
         }
     }
 
@@ -232,8 +277,9 @@ where
                 Some(duration) => duration,
                 None => {
                     error!("No more re-connect retries remaining. Giving up.");
+                    (self.options.on_exhausted_callback())();
                     self.status = Status::FailedAndExhausted;
-                    cx.waker().wake_by_ref();
+                    self.wake();
                     return;
                 }
             };
@@ -276,7 +322,7 @@ where
         match attempt.poll(cx) {
             Poll::Ready(Ok(underlying_io)) => {
                 info!("Connection re-established");
-                cx.waker().wake_by_ref();
+                self.wake();
                 self.status = Status::Connected;
                 (self.options.on_connect_callback())();
                 self.stream = underlying_io;
@@ -313,21 +359,21 @@ where
                 let poll = ready!(Pin::new(&mut self.stream).poll_next(cx));
                 if let Some(poll) = poll {
                     if T::is_read_disconnect_error(&poll) {
-                        self.on_disconnect(cx);
-                        Poll::Pending
+                        self.as_mut().on_disconnect(cx);
+                        self.return_stream(cx, Poll::Pending)
                     } else {
-                        Poll::Ready(Some(poll))
+                        self.return_stream(cx, Poll::Ready(Some(poll)))
                     }
                 } else {
-                    self.on_disconnect(cx);
-                    Poll::Pending
+                    self.as_mut().on_disconnect(cx);
+                        self.return_stream(cx, Poll::Pending)
                 }
             }
             Status::Disconnected(_) => {
-                self.poll_disconnect(cx);
-                Poll::Pending
+                self.as_mut().poll_disconnect(cx);
+                        self.return_stream(cx, Poll::Pending)
             }
-            Status::FailedAndExhausted => Poll::Ready(None),
+            Status::FailedAndExhausted => self.return_stream(cx, Poll::Ready(None)),
         }
     }
 
@@ -352,17 +398,19 @@ where
                 let poll = Pin::new(&mut self.stream).poll_ready(cx);
 
                 if self.is_write_disconnect_detected(&poll) {
-                    self.on_disconnect(cx);
-                    Poll::Pending
+                    self.as_mut().on_disconnect(cx);
+                    self.return_sink(cx, Poll::Pending)
                 } else {
-                    poll
+                    self.return_sink(cx, poll)
                 }
             }
             Status::Disconnected(_) => {
-                self.poll_disconnect(cx);
-                Poll::Pending
+                self.as_mut().poll_disconnect(cx);
+                self.return_sink(cx, Poll::Pending)
             }
-            Status::FailedAndExhausted => Poll::Ready(Err(T::exhaust_err())),
+            Status::FailedAndExhausted => {
+                self.return_sink(cx, Poll::Ready(Err(T::exhaust_err())))
+            }
         }
     }
 
@@ -376,17 +424,19 @@ where
                 let poll = Pin::new(&mut self.stream).poll_flush(cx);
 
                 if self.is_write_disconnect_detected(&poll) {
-                    self.on_disconnect(cx);
-                    Poll::Pending
+                    self.as_mut().on_disconnect(cx);
+                    self.return_sink(cx, Poll::Pending)
                 } else {
-                    poll
+                    self.return_sink(cx, poll)
                 }
             }
             Status::Disconnected(_) => {
-                self.poll_disconnect(cx);
-                Poll::Pending
+                self.as_mut().poll_disconnect(cx);
+                self.return_sink(cx, Poll::Pending)
             }
-            Status::FailedAndExhausted => Poll::Ready(Err(T::exhaust_err())),
+            Status::FailedAndExhausted => {
+                self.return_sink(cx, Poll::Ready(Err(T::exhaust_err())))
+            }
         }
     }
 
@@ -396,13 +446,14 @@ where
                 let poll = Pin::new(&mut self.stream).poll_close(cx);
                 if poll.is_ready() {
                     // if completed, we are disconnected whether error or not
-                    self.on_disconnect(cx);
+                    self.as_mut().on_disconnect(cx);
                 }
-
-                poll
+                self.return_sink(cx, poll)
             }
-            Status::Disconnected(_) => Poll::Pending,
-            Status::FailedAndExhausted => Poll::Ready(Err(T::exhaust_err())),
+            Status::Disconnected(_) => self.return_sink(cx, Poll::Pending),
+            Status::FailedAndExhausted => {
+                self.return_sink(cx, Poll::Ready(Err(T::exhaust_err())))
+            }
         }
     }
 }
