@@ -259,6 +259,10 @@ where
         }
     }
 
+    pub fn get_response(&self) -> &Response {
+        &self.response
+    }
+
     fn on_disconnect(mut self: Pin<&mut Self>, cx: &mut Context) {
         match &mut self.status {
             // initial disconnect
