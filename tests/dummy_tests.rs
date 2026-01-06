@@ -11,6 +11,7 @@ use futures::{Sink, Stream};
 
 use stream_reconnect::ReconnectOptions;
 use stream_reconnect::{ReconnectStream, UnderlyingStream};
+use tokio_tungstenite::handshake::client::Response;
 
 #[derive(Default)]
 pub struct DummyStream {
@@ -33,7 +34,7 @@ impl UnderlyingStream<DummyCtor, Vec<u8>, io::Error> for DummyStreamConnector {
     type Stream = DummyStream;
 
     #[cfg(not(feature = "not-send"))]
-    fn establish(ctor: DummyCtor) -> Pin<Box<dyn Future<Output = io::Result<DummyStream>> + Send>> {
+    fn establish(ctor: DummyCtor) -> Pin<Box<dyn Future<Output = (io::Result<DummyStream>, Response)> + Send>> {
         let mut connect_attempt_outcome_results = ctor.connect_outcomes.lock().unwrap();
 
         let should_succeed = connect_attempt_outcome_results.remove(0);
@@ -41,15 +42,15 @@ impl UnderlyingStream<DummyCtor, Vec<u8>, io::Error> for DummyStreamConnector {
             let dummy_io = DummyStream {
                 poll_read_results: ctor.poll_read_results.clone(),
             };
-
-            Box::pin(async { Ok(dummy_io) })
+            response: Response::default(); // Placeholder response
+            Box::pin(async { Ok(dummy_io, response) })
         } else {
             Box::pin(async { Err(io::Error::new(ErrorKind::NotConnected, "So unfortunate")) })
         }
     }
 
     #[cfg(feature = "not-send")]
-    fn establish(ctor: DummyCtor) -> Pin<Box<dyn Future<Output = io::Result<DummyStream>>>> {
+    fn establish(ctor: DummyCtor) -> Pin<Box<dyn Future<Output = (io::Result<DummyStream>, Response)>>> {
         let mut connect_attempt_outcome_results = ctor.connect_outcomes.lock().unwrap();
 
         let should_succeed = connect_attempt_outcome_results.remove(0);

@@ -9,8 +9,10 @@ use std::time::Duration;
 
 use futures::{ready, Sink, Stream};
 use log::{debug, error, info};
+use tokio_tungstenite::tungstenite::http::response;
 
 use crate::config::ReconnectOptions;
+use tokio_tungstenite::tungstenite::handshake::client::Response;
 
 /// Trait that should be implemented for an [Stream] and/or [Sink]
 /// item to enable it to work with the [ReconnectStream] struct.
@@ -24,12 +26,12 @@ where
     /// The creation function is used by [ReconnectStream] in order to establish both the initial IO connection
     /// in addition to performing reconnects.
     #[cfg(feature = "not-send")]
-    fn establish(ctor_arg: C) -> Pin<Box<dyn Future<Output = Result<Self::Stream, E>>>>;
+    fn establish(ctor_arg: C) -> Pin<Box<dyn Future<Output = Result<(Self::Stream, Response), E>>>>;
 
     /// The creation function is used by [ReconnectStream] in order to establish both the initial IO connection
     /// in addition to performing reconnects.
     #[cfg(not(feature = "not-send"))]
-    fn establish(ctor_arg: C) -> Pin<Box<dyn Future<Output = Result<Self::Stream, E>> + Send>>;
+    fn establish(ctor_arg: C) -> Pin<Box<dyn Future<Output = Result<(Self::Stream, Response), E>> + Send>>;
 
     /// When sink send experience an `Error` during operation, it does not necessarily mean
     /// it is a disconnect/termination (ex: WouldBlock).
@@ -62,9 +64,9 @@ where
 {
     attempts_tracker: AttemptsTracker,
     #[cfg(not(feature = "not-send"))]
-    reconnect_attempt: Pin<Box<dyn Future<Output = Result<T::Stream, E>> + Send>>,
+    reconnect_attempt: Pin<Box<dyn Future<Output = Result<(T::Stream, Response), E>> + Send>>,
     #[cfg(feature = "not-send")]
-    reconnect_attempt: Pin<Box<dyn Future<Output = Result<T::Stream, E>>>>,
+    reconnect_attempt: Pin<Box<dyn Future<Output = Result<(T::Stream, Response), E>>>>,
     _marker: PhantomData<(C, I, E)>,
 }
 
@@ -97,6 +99,7 @@ where
 {
     status: Status<T, C, I, E>,
     stream: T::Stream,
+    response: Response,
     options: ReconnectOptions,
     ctor_arg: C,
     cx_waker_sink: Option<std::task::Waker>,
@@ -189,12 +192,14 @@ where
             .map(Some)
             .chain(once(None));
         let mut result = None;
+        let mut response: Response = Response::default();
         for (counter, maybe_delay) in tries.enumerate() {
             match T::establish(ctor_arg.clone()).await {
                 Ok(inner) => {
                     debug!("Initial connection succeeded.");
                     (options.on_connect_callback())();
-                    result = Some(Ok(inner));
+                    response = inner.1;
+                    result = Some(Ok(inner.0));
                     break;
                 }
                 Err(e) => {
@@ -232,6 +237,7 @@ where
             Ok(stream) => Ok(ReconnectStream {
                 status: Status::Connected,
                 stream,
+                response,
                 options,
                 ctor_arg,
                 cx_waker_sink: None,
@@ -325,7 +331,7 @@ where
                 self.wake();
                 self.status = Status::Connected;
                 (self.options.on_connect_callback())();
-                self.stream = underlying_io;
+                self.stream = underlying_io.0;
             }
             Poll::Ready(Err(err)) => {
                 error!("Connection attempt #{} failed: {:?}", attempt_num, err);

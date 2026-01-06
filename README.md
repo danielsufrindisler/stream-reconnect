@@ -54,11 +54,11 @@ impl UnderlyingStream<String, Result<Message, WsError>, WsError> for MyWs {
 
     // Establishes connection.
     // Additionally, this will be used when reconnect tries are attempted.
-    fn establish(addr: String) -> Pin<Box<dyn Future<Output = Result<Self::Stream, WsError>> + Send>> {
+    fn establish(addr: String) -> Pin<Box<dyn Future<Output = Result<(Self::Stream, Response), WsError>> + Send>> {
         Box::pin(async move {
             // In this case, we are trying to connect to the WebSocket endpoint
-            let ws_connection = connect_async(addr).await.unwrap().0;
-            Ok(ws_connection)
+            let (ws_connection, response) = connect_async(addr).await.unwrap();
+            Ok(ws_connection, response)
         })
     }
 
